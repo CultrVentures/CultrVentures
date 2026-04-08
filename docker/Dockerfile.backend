@@ -19,8 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY backend/app ./app
 COPY agents/skills ./skills
-COPY memory ./memory
-COPY CLAUDE.md .
+COPY scripts ./scripts
 
 # Set ownership
 RUN chown -R cultr:cultr /app
