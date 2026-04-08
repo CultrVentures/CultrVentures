@@ -2,7 +2,6 @@
 Smoke tests for health endpoints.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app

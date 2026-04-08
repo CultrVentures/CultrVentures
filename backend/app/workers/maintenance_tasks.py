@@ -32,7 +32,6 @@ def validate_vault_grounding() -> dict:
             cwd="/app",
         )
 
-        passed = "SUMMARY" in result.stdout
         return {
             "status": "completed",
             "exit_code": result.returncode,
@@ -83,8 +82,6 @@ def update_tool_reliability() -> dict:
     Updates memory/system/tool-reliability.md
     """
     logger.info("Updating tool reliability metrics")
-
-    reliability_file = Path("/app/memory/system/tool-reliability.md")
 
     # TODO: Query agent_tasks table for recent success/failure rates
     # TODO: Update fallback chain priorities based on reliability

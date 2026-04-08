@@ -91,7 +91,6 @@ def _trigger_grounding_check(path: Path) -> None:
     try:
         content = path.read_text(encoding="utf-8")
         if content.startswith("---") and "agent:" in content[:500]:
-            from app.workers.maintenance_tasks import validate_vault_grounding
             # Run inline validation (lightweight) instead of full sweep
             import subprocess
             result = subprocess.run(
