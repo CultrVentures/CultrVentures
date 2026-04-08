@@ -1,0 +1,102 @@
+# CULTR Ventures — CI Pipeline
+# Runs on every PR and push to main
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint, Type Check, Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cultr_test
+          POSTGRES_USER: cultr
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cultr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps
+        run: |
+          pip install -r backend/requirements.txt
+          pip install ruff mypy pytest
+
+      - name: Lint (Ruff)
+        run: ruff check backend/
+
+      - name: Type Check (mypy)
+        run: mypy backend/app/ --ignore-missing-imports
+
+      - name: Test (pytest)
+        env:
+          DATABASE_URL: postgresql://cultr:test@localhost:5432/cultr_test
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest backend/tests/ -v
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps
+        run: |
+          cd frontend/astro && npm ci
+
+      - name: Lint frontend
+        run: |
+          cd frontend/astro && npx astro check
+
+      - name: Validate grounding rules
+        run: python scripts/validate-grounding.py --all || true
+
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        run: |
+          docker build -f docker/Dockerfile.backend -t cultr-backend:latest .
+
+      - name: Build ACP image
+        run: |
+          docker build -f docker/Dockerfile.acp -t cultr-acp:latest .

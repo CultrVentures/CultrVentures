@@ -1,0 +1,83 @@
+# CULTR Ventures — GPU Node Docker Compose (GEX44)
+# Deploy: docker compose -f docker/docker-compose.gpu.yml up -d
+
+name: cultr-gpu
+
+services:
+  # === LOCAL LLM (PromptThrift compression, validation) ===
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: cultr-vllm
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8080:8000"  # Accessible from private VLAN (10.0.0.0/24)
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    command: >
+      --model google/gemma-2-9b-it
+      --quantization awq
+      --max-model-len 8192
+      --gpu-memory-utilization 0.85
+      --dtype float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 32G
+
+  # === EMBEDDINGS API (replaces OpenAI embeddings) ===
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    container_name: cultr-embeddings
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8081:80"
+    environment:
+      - MODEL_ID=BAAI/bge-large-en-v1.5
+    volumes:
+      - embeddings-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+
+  # === IMAGE GENERATION (ad creatives, social visuals) ===
+  comfyui:
+    image: yanwk/comfyui-boot:latest
+    container_name: cultr-comfyui
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8082:8188"
+    volumes:
+      - comfyui-data:/root
+      - comfyui-output:/root/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 24G
+
+volumes:
+  model-cache:
+    driver: local
+  embeddings-cache:
+    driver: local
+  comfyui-data:
+    driver: local
+  comfyui-output:
+    driver: local

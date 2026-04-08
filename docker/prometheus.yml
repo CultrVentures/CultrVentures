@@ -1,0 +1,59 @@
+# CULTR Ventures — Prometheus Configuration
+# Scrapes metrics from all platform services
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── FastAPI Backend ──────────────────────────────────────────────
+  - job_name: "fastapi"
+    static_configs:
+      - targets: ["fastapi:8000"]
+    metrics_path: /metrics
+
+  # ── Node Exporter (host metrics) ─────────────────────────────────
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # ── PostgreSQL ───────────────────────────────────────────────────
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres:5432"]
+    # Requires postgres_exporter sidecar (TODO: add to compose)
+
+  # ── Redis ────────────────────────────────────────────────────────
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis:6379"]
+    # Requires redis_exporter sidecar (TODO: add to compose)
+
+  # ── Qdrant ───────────────────────────────────────────────────────
+  - job_name: "qdrant"
+    static_configs:
+      - targets: ["qdrant:6333"]
+    metrics_path: /metrics
+
+  # ── Celery Workers ───────────────────────────────────────────────
+  - job_name: "celery"
+    static_configs:
+      - targets: ["celery-worker:9808"]
+    # Requires celery-exporter (TODO: add to compose)
+
+  # ── ACP Runtime ──────────────────────────────────────────────────
+  - job_name: "acp"
+    static_configs:
+      - targets: ["acp-runtime:18790"]
+    metrics_path: /metrics
+
+  # ── GPU Node Services (via VLAN) ─────────────────────────────────
+  - job_name: "vllm"
+    static_configs:
+      - targets: ["10.0.0.2:8080"]
+    metrics_path: /metrics
+
+  - job_name: "embeddings"
+    static_configs:
+      - targets: ["10.0.0.2:8081"]
+    metrics_path: /metrics

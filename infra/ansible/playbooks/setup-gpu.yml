@@ -1,0 +1,228 @@
+# CULTR Ventures — GPU Node Setup (GEX44)
+# Provisions the Hetzner GEX44 for local LLM inference
+# GPU node has NO public internet — only reachable via VLAN from AX52
+#
+# Run: ansible-playbook -i inventory.yml playbooks/setup-gpu.yml
+
+---
+- name: Setup CULTR GPU Node (GEX44)
+  hosts: gpu
+  become: true
+
+  vars:
+    cultr_user: cultr
+    project_dir: /opt/cultr-gpu
+    nvidia_driver_version: "550"
+
+  tasks:
+    # ── System Basics ──────────────────────────────────────────────
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - htop
+          - tmux
+          - jq
+          - ufw
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - python3-pip
+        state: present
+
+    - name: Set hostname
+      hostname:
+        name: cultr-gex44
+
+    # ── Firewall (VLAN Only) ────────────────────────────────────────
+    - name: UFW deny all incoming
+      ufw:
+        direction: incoming
+        policy: deny
+
+    - name: UFW allow outgoing (for package installs during setup)
+      ufw:
+        direction: outgoing
+        policy: allow
+
+    - name: Allow ALL traffic from VLAN (AX52)
+      ufw:
+        rule: allow
+        from_ip: 10.0.0.0/24
+
+    - name: Allow SSH from AX52 only
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        from_ip: 10.0.0.1
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    # ── VLAN Interface ──────────────────────────────────────────────
+    - name: Configure VLAN interface
+      copy:
+        dest: /etc/netplan/60-vlan.yaml
+        content: |
+          network:
+            version: 2
+            vlans:
+              vlan0:
+                id: 4000
+                link: enp0s31f6
+                addresses:
+                  - 10.0.0.2/24
+                routes:
+                  - to: default
+                    via: 10.0.0.1
+      notify: Apply netplan
+
+    # ── NVIDIA Driver ───────────────────────────────────────────────
+    - name: Add NVIDIA PPA
+      apt_repository:
+        repo: "ppa:graphics-drivers/ppa"
+        state: present
+
+    - name: Install NVIDIA driver
+      apt:
+        name: "nvidia-driver-{{ nvidia_driver_version }}"
+        state: present
+        update_cache: yes
+      notify: Reboot for NVIDIA
+
+    - name: Install NVIDIA Container Toolkit GPG key
+      apt_key:
+        url: https://nvidia.github.io/libnvidia-container/gpgkey
+        state: present
+
+    - name: Add NVIDIA Container Toolkit repo
+      apt_repository:
+        repo: "deb https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
+        state: present
+
+    - name: Install NVIDIA Container Toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: yes
+
+    # ── Docker ──────────────────────────────────────────────────────
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Configure Docker daemon with NVIDIA runtime
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "runtimes": {
+              "nvidia": {
+                "args": [],
+                "path": "nvidia-container-runtime"
+              }
+            },
+            "default-runtime": "nvidia",
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "50m",
+              "max-file": "3"
+            }
+          }
+      notify: Restart Docker
+
+    - name: Enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ── User + Project ──────────────────────────────────────────────
+    - name: Create cultr user
+      user:
+        name: "{{ cultr_user }}"
+        shell: /bin/bash
+        groups: [docker, sudo]
+        append: yes
+
+    - name: Create project directory
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: "{{ cultr_user }}"
+        group: "{{ cultr_user }}"
+
+    - name: Copy GPU docker-compose
+      become_user: "{{ cultr_user }}"
+      copy:
+        src: "{{ playbook_dir }}/../../../docker/docker-compose.gpu.yml"
+        dest: "{{ project_dir }}/docker-compose.yml"
+        owner: "{{ cultr_user }}"
+
+    # ── Model Cache ─────────────────────────────────────────────────
+    - name: Create model cache directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ cultr_user }}"
+        group: "{{ cultr_user }}"
+        mode: "0755"
+      loop:
+        - /opt/models
+        - /opt/models/vllm
+        - /opt/models/embeddings
+        - /opt/models/comfyui
+
+    # ── Pull and Start Services ─────────────────────────────────────
+    - name: Pull GPU service images
+      become_user: "{{ cultr_user }}"
+      command: docker compose pull
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Start GPU services
+      become_user: "{{ cultr_user }}"
+      command: docker compose up -d
+      args:
+        chdir: "{{ project_dir }}"
+
+  handlers:
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Apply netplan
+      command: netplan apply
+
+    - name: Reboot for NVIDIA
+      reboot:
+        msg: "Rebooting to load NVIDIA driver"
+        reboot_timeout: 300

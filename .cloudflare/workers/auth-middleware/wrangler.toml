@@ -1,0 +1,18 @@
+# CULTR Ventures — Auth Middleware Worker
+# Validates JWTs at the Cloudflare edge before forwarding to Hetzner origin
+
+name = "cultr-auth-middleware"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# Route: all API traffic goes through auth first
+routes = [
+  { pattern = "api.cultrventures.com/*", zone_name = "cultrventures.com" }
+]
+
+# Environment variables (non-secret defaults)
+[vars]
+ALLOWED_ORIGINS = "https://cultrventures.com,https://www.cultrventures.com,https://portal.cultrventures.com"
+
+# Secrets (set via `wrangler secret put`):
+#   SUPABASE_JWT_SECRET

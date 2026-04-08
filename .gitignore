@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════
+# CULTR Ventures — .gitignore
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Environment & Secrets ──────────────────────────────────────────
+.env
+.env.local
+.env.production
+*.pem
+*.key
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+*.tfvars
+
+# ── Python ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+venv/
+.venv/
+
+# ── Node ───────────────────────────────────────────────────────────
+node_modules/
+.astro/
+dist/
+.wrangler/
+
+# ── Docker ─────────────────────────────────────────────────────────
+docker/data/
+docker/volumes/
+
+# ── IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── Obsidian (vault metadata — NOT content) ────────────────────────
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/hotkeys.json
+
+# ── Backups (too large for git) ────────────────────────────────────
+*.dump
+*.snapshot
+backups/
+
+# ── Logs ───────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Model weights (self-hosted LLM) ───────────────────────────────
+models/
+*.gguf
+*.safetensors
+*.bin

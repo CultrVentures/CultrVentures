@@ -1,0 +1,35 @@
+# CULTR Ventures — Backend Dockerfile
+# Serves: FastAPI + MCP Server + Agent Workers + Vault Watcher
+
+FROM python:3.12-slim AS base
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash cultr
+WORKDIR /app
+
+# Install Python deps
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY backend/app ./app
+COPY agents/skills ./skills
+COPY memory ./memory
+COPY CLAUDE.md .
+
+# Set ownership
+RUN chown -R cultr:cultr /app
+
+USER cultr
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health || exit 1
+
+# Default: run FastAPI with uvicorn
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

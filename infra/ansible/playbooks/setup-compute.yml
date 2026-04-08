@@ -1,0 +1,270 @@
+# CULTR Ventures — Compute Node Setup (AX52)
+# Provisions the main Hetzner AX52 dedicated server
+#
+# Run: ansible-playbook -i inventory.yml playbooks/setup-compute.yml
+
+---
+- name: Setup CULTR Compute Node (AX52)
+  hosts: compute
+  become: true
+
+  vars:
+    swap_size: 8G
+    docker_data_dir: /var/lib/docker
+    cultr_user: cultr
+    project_dir: /opt/cultr-platform
+
+  tasks:
+    # ── System Basics ──────────────────────────────────────────────
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - htop
+          - tmux
+          - vim
+          - unzip
+          - jq
+          - fail2ban
+          - ufw
+          - rsync
+          - logrotate
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - python3-pip
+          - python3-docker
+        state: present
+
+    - name: Set timezone
+      timezone:
+        name: UTC
+
+    - name: Set hostname
+      hostname:
+        name: cultr-ax52
+
+    # ── User Setup ─────────────────────────────────────────────────
+    - name: Create cultr user
+      user:
+        name: "{{ cultr_user }}"
+        shell: /bin/bash
+        groups: [docker, sudo]
+        append: yes
+        create_home: yes
+
+    - name: Copy SSH authorized keys
+      authorized_key:
+        user: "{{ cultr_user }}"
+        key: "{{ lookup('file', '~/.ssh/cultr_deploy.pub') }}"
+        state: present
+
+    # ── Firewall (Zero Open Ports Strategy) ─────────────────────────
+    - name: Configure UFW defaults
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: Allow SSH from specific IPs only
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        from_ip: "{{ item }}"
+      loop: "{{ allowed_ssh_ips }}"
+
+    - name: Allow VLAN traffic (10.0.0.0/24)
+      ufw:
+        rule: allow
+        from_ip: 10.0.0.0/24
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Configure fail2ban
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 3
+
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+
+    - name: Enable fail2ban
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    # ── Swap ────────────────────────────────────────────────────────
+    - name: Create swap file
+      command: fallocate -l {{ swap_size }} /swapfile
+      args:
+        creates: /swapfile
+
+    - name: Set swap file permissions
+      file:
+        path: /swapfile
+        mode: "0600"
+
+    - name: Format swap
+      command: mkswap /swapfile
+      when: ansible_swaptotal_mb == 0
+
+    - name: Enable swap
+      command: swapon /swapfile
+      when: ansible_swaptotal_mb == 0
+
+    - name: Add swap to fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "/swapfile swap swap defaults 0 0"
+        state: present
+
+    # ── Docker ──────────────────────────────────────────────────────
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Configure Docker daemon
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "50m",
+              "max-file": "3"
+            },
+            "storage-driver": "overlay2",
+            "default-address-pools": [
+              {"base": "172.17.0.0/16", "size": 24}
+            ]
+          }
+      notify: Restart Docker
+
+    - name: Enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ── Cloudflare Tunnel ───────────────────────────────────────────
+    - name: Download cloudflared
+      get_url:
+        url: "https://github.com/cloudflare/cloudflared/releases/download/{{ cloudflared_version }}/cloudflared-linux-amd64.deb"
+        dest: /tmp/cloudflared.deb
+
+    - name: Install cloudflared
+      apt:
+        deb: /tmp/cloudflared.deb
+
+    - name: Create cloudflared config directory
+      file:
+        path: /etc/cloudflared
+        state: directory
+        mode: "0755"
+
+    - name: Install cloudflared as service
+      command: cloudflared service install {{ tunnel_token }}
+      args:
+        creates: /etc/systemd/system/cloudflared.service
+
+    - name: Enable cloudflared
+      systemd:
+        name: cloudflared
+        state: started
+        enabled: yes
+
+    # ── VLAN Interface ──────────────────────────────────────────────
+    - name: Configure VLAN interface
+      copy:
+        dest: /etc/netplan/60-vlan.yaml
+        content: |
+          network:
+            version: 2
+            vlans:
+              vlan0:
+                id: 4000
+                link: enp0s31f6
+                addresses:
+                  - 10.0.0.1/24
+      notify: Apply netplan
+
+    # ── Project Directory ───────────────────────────────────────────
+    - name: Create project directory
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: "{{ cultr_user }}"
+        group: "{{ cultr_user }}"
+        mode: "0755"
+
+    - name: Clone repository
+      become_user: "{{ cultr_user }}"
+      git:
+        repo: "git@github.com:cultr-ventures/cultr-platform.git"
+        dest: "{{ project_dir }}"
+        version: main
+        accept_hostkey: yes
+
+    # ── Backup Cron ─────────────────────────────────────────────────
+    - name: Create backup directory
+      file:
+        path: /opt/backups
+        state: directory
+        owner: "{{ cultr_user }}"
+        group: "{{ cultr_user }}"
+        mode: "0750"
+
+    - name: Setup daily backup cron
+      cron:
+        name: "CULTR daily backup"
+        minute: "0"
+        hour: "3"
+        job: "{{ project_dir }}/scripts/backup.sh >> /var/log/cultr-backup.log 2>&1"
+        user: "{{ cultr_user }}"
+
+  handlers:
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Apply netplan
+      command: netplan apply

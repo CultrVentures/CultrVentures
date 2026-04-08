@@ -1,0 +1,15 @@
+# CULTR Ventures — ACP Seller Runtime Dockerfile
+# Runs the Virtuals Protocol ACP seller for on-chain agent commerce
+
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install ACP SDK
+RUN npm init -y && npm install @virtuals-protocol/acp-node ethers
+
+# Copy offerings
+COPY backend/app/offerings ./offerings
+
+# Default: start ACP seller runtime
+CMD ["npx", "acp", "serve", "start", "--offerings", "./offerings/", "--port", "18790"]

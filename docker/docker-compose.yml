@@ -1,0 +1,299 @@
+# CULTR Ventures — Production Docker Compose (AX52 Compute Node)
+# Deploy: docker compose -f docker/docker-compose.yml up -d
+
+name: cultr-production
+
+services:
+  # === CORE API ===
+  fastapi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: cultr-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://cultr:${POSTGRES_PASSWORD}@postgres:5432/cultr_platform
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - GPU_INFERENCE_URL=http://10.0.0.2:8080  # GEX44 via private VLAN
+      - EMBEDDINGS_URL=http://10.0.0.2:8081
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    volumes:
+      - vault-data:/app/vault
+      - ../memory:/app/memory:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
+
+  # === DATABASE ===
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cultr-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      - POSTGRES_DB=cultr_platform
+      - POSTGRES_USER=cultr
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cultr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "2"
+    command: >
+      postgres
+        -c shared_buffers=2GB
+        -c effective_cache_size=6GB
+        -c work_mem=64MB
+        -c maintenance_work_mem=512MB
+        -c max_connections=200
+        -c wal_buffers=64MB
+        -c checkpoint_completion_target=0.9
+        -c random_page_cost=1.1
+
+  # === VECTOR SEARCH ===
+  qdrant:
+    image: qdrant/qdrant:v1.12.0
+    container_name: cultr-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: "4"
+
+  # === TASK QUEUE ===
+  redis:
+    image: redis:7-alpine
+    container_name: cultr-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru --save 60 1000
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # === AGENT WORKERS ===
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: cultr-agent-workers
+    restart: unless-stopped
+    command: celery -A app.agents.worker worker -l info --concurrency=8
+    environment:
+      - DATABASE_URL=postgresql://cultr:${POSTGRES_PASSWORD}@postgres:5432/cultr_platform
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - GPU_INFERENCE_URL=http://10.0.0.2:8080
+      - EMBEDDINGS_URL=http://10.0.0.2:8081
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - vault-data:/app/vault
+      - ../memory:/app/memory
+    depends_on:
+      - redis
+      - postgres
+      - qdrant
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+
+  # === CRON SCHEDULER ===
+  celery-beat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: cultr-scheduler
+    restart: unless-stopped
+    command: celery -A app.agents.worker beat -l info --schedule=/tmp/celerybeat-schedule
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # === ACP SELLER RUNTIME ===
+  acp-runtime:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.acp
+    container_name: cultr-acp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18790:18790"
+    environment:
+      - ACP_WALLET_KEY=${ACP_WALLET_KEY}
+      - OFFERINGS_DIR=/app/offerings
+    volumes:
+      - ../backend/app/offerings:/app/offerings:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1"
+
+  # === VAULT WATCHER ===
+  vault-watcher:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: cultr-vault-watcher
+    restart: unless-stopped
+    command: python -m app.services.vault_watcher
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - EMBEDDINGS_URL=http://10.0.0.2:8081
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - vault-data:/app/vault
+    depends_on:
+      - qdrant
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1"
+
+  # === CLOUDFLARE TUNNEL ===
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cultr-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - fastapi
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # === MONITORING ===
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cultr-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: cultr-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_SERVER_ROOT_URL=https://cultrventures.com/monitoring
+    volumes:
+      - grafana-data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: cultr-node-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9100"
+    command:
+      - '--path.rootfs=/host'
+    volumes:
+      - /:/host:ro,rslave
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  postgres-data:
+    driver: local
+  qdrant-data:
+    driver: local
+  qdrant-snapshots:
+    driver: local
+  redis-data:
+    driver: local
+  vault-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  default:
+    name: cultr-network

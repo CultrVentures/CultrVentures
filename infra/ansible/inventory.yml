@@ -1,0 +1,41 @@
+# CULTR Ventures — Ansible Inventory
+# Hetzner dedicated servers + optional staging VPS
+
+all:
+  vars:
+    ansible_user: cultr
+    ansible_python_interpreter: /usr/bin/python3
+    project_name: cultr-platform
+    project_dir: /opt/cultr-platform
+    docker_compose_version: "2.27"
+    cloudflared_version: "2024.12.0"
+
+  children:
+    compute:
+      hosts:
+        ax52:
+          ansible_host: "{{ ax52_public_ip }}"
+          # Hetzner AX52: AMD Ryzen 7 7700, 64GB DDR5, 2×1TB NVMe
+          server_role: compute
+          vlan_ip: 10.0.0.1
+          docker_memory_limit: 56g  # Reserve 8GB for OS/overhead
+
+    gpu:
+      hosts:
+        gex44:
+          ansible_host: "{{ gex44_public_ip }}"
+          # Hetzner GEX44: Intel i5-13500, 64GB DDR5, RTX 4070 (12GB VRAM)
+          server_role: gpu
+          vlan_ip: 10.0.0.2
+          gpu_model: rtx4070
+          vram_gb: 12
+          # No public internet — only accessible via private VLAN from ax52
+          ansible_ssh_common_args: '-o ProxyJump=cultr@{{ ax52_public_ip }}'
+
+    staging:
+      hosts:
+        cpx31:
+          ansible_host: "{{ staging_ip | default(omit) }}"
+          server_role: staging
+          # Optional CPX31: 4 vCPU, 8GB RAM, 160GB SSD — €14.16/mo
+          when: enable_staging | default(false)

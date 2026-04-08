@@ -1,0 +1,17 @@
+# CULTR Ventures — Rate Limiter Worker
+# Edge-based rate limiting with per-IP, per-user, and per-agent tiers
+
+name = "cultr-rate-limiter"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# Runs on all API routes (chained after auth-middleware)
+routes = [
+  { pattern = "api.cultrventures.com/*", zone_name = "cultrventures.com" }
+]
+
+# KV namespace for rate limit counters
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"

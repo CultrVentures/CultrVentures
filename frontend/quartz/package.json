@@ -1,0 +1,14 @@
+{
+  "name": "cultr-knowledge-base",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CULTR Ventures Knowledge Base — built with Quartz 4",
+  "scripts": {
+    "build": "npx quartz build",
+    "serve": "npx quartz build --serve",
+    "update": "npx quartz update"
+  },
+  "dependencies": {
+    "@jackyzha0/quartz": "^4.4.0"
+  }
+}

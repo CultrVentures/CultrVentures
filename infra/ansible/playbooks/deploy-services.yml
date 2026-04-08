@@ -1,0 +1,112 @@
+# CULTR Ventures — Deploy Services Playbook
+# Deploys/updates Docker services on both compute and GPU nodes
+#
+# Run: ansible-playbook -i inventory.yml playbooks/deploy-services.yml
+# Tags: --tags compute  or  --tags gpu  for selective deploy
+
+---
+- name: Deploy CULTR Services — Compute Node
+  hosts: compute
+  become: true
+  become_user: cultr
+  tags: [compute]
+
+  vars:
+    project_dir: /opt/cultr-platform
+    compose_file: docker/docker-compose.yml
+
+  tasks:
+    - name: Pull latest code
+      git:
+        repo: "git@github.com:cultr-ventures/cultr-platform.git"
+        dest: "{{ project_dir }}"
+        version: main
+        force: no
+
+    - name: Copy .env file
+      copy:
+        src: "{{ playbook_dir }}/../../../.env"
+        dest: "{{ project_dir }}/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Build Docker images
+      command: docker compose -f {{ compose_file }} build --no-cache
+      args:
+        chdir: "{{ project_dir }}"
+      register: build_result
+
+    - name: Start services
+      command: docker compose -f {{ compose_file }} up -d --remove-orphans
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Wait for API health check
+      uri:
+        url: http://localhost:8000/api/health
+        status_code: 200
+      register: health
+      retries: 12
+      delay: 5
+      until: health.status == 200
+
+    - name: Run database migrations
+      command: >
+        docker compose -f {{ compose_file }} exec -T fastapi
+        alembic upgrade head
+      args:
+        chdir: "{{ project_dir }}"
+      ignore_errors: yes
+
+    - name: Display service status
+      command: docker compose -f {{ compose_file }} ps
+      args:
+        chdir: "{{ project_dir }}"
+      register: ps_output
+
+    - name: Show status
+      debug:
+        msg: "{{ ps_output.stdout_lines }}"
+
+- name: Deploy CULTR Services — GPU Node
+  hosts: gpu
+  become: true
+  become_user: cultr
+  tags: [gpu]
+
+  vars:
+    project_dir: /opt/cultr-gpu
+
+  tasks:
+    - name: Copy GPU compose file
+      copy:
+        src: "{{ playbook_dir }}/../../../docker/docker-compose.gpu.yml"
+        dest: "{{ project_dir }}/docker-compose.yml"
+
+    - name: Pull GPU images
+      command: docker compose pull
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Start GPU services
+      command: docker compose up -d --remove-orphans
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Verify GPU services are running
+      command: docker compose ps
+      args:
+        chdir: "{{ project_dir }}"
+      register: gpu_ps
+
+    - name: Show GPU service status
+      debug:
+        msg: "{{ gpu_ps.stdout_lines }}"
+
+    - name: Check NVIDIA GPU status
+      command: nvidia-smi
+      register: nvidia_output
+
+    - name: Show GPU utilization
+      debug:
+        msg: "{{ nvidia_output.stdout_lines }}"
